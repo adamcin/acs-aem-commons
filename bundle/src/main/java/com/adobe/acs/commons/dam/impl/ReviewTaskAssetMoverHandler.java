@@ -27,7 +27,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Optional;
+import javax.annotation.Nullable;
 import javax.jcr.Node;
 import javax.jcr.RepositoryException;
 import javax.jcr.Session;
@@ -85,10 +85,10 @@ public class ReviewTaskAssetMoverHandler implements EventHandler {
     private static final String PN_ON_REJECT = "onRejectMoveTo";
     private static final String PN_CONTENT_PATH = "contentPath";
     private static final String PN_CONFLICT_RESOLUTION = "onReviewConflictResolution";
-    private static final String CONFLICT_RESOLUTION_SKIP = "skip";
-    private static final String CONFLICT_RESOLUTION_REPLACE = "replace";
-    private static final String CONFLICT_RESOLUTION_NEW_ASSET = "new-asset";
-    private static final String CONFLICT_RESOLUTION_NEW_VERSION = "new-version";
+    protected static final String CONFLICT_RESOLUTION_SKIP = "skip";
+    protected static final String CONFLICT_RESOLUTION_REPLACE = "replace";
+    protected static final String CONFLICT_RESOLUTION_NEW_ASSET = "new-asset";
+    protected static final String CONFLICT_RESOLUTION_NEW_VERSION = "new-version";
 
     public static final String USER_EVENT_TYPE = "acs-aem-commons.review-task-mover";
 
@@ -99,26 +99,56 @@ public class ReviewTaskAssetMoverHandler implements EventHandler {
         AUTH_INFO = Collections.singletonMap(ResourceResolverFactory.SUBSERVICE, (Object) SERVICE_NAME);
     }
 
+    enum RecognizedConflictResolutionBehavior {
+        NEW_VERSION(CONFLICT_RESOLUTION_NEW_VERSION),
+        NEW_ASSET(CONFLICT_RESOLUTION_NEW_ASSET),
+        REPLACE(CONFLICT_RESOLUTION_REPLACE),
+        SKIP(CONFLICT_RESOLUTION_SKIP);
+
+        private final String option;
+
+        RecognizedConflictResolutionBehavior(final String option) {
+            this.option = option;
+        }
+
+        @Nullable
+        static RecognizedConflictResolutionBehavior forOption(@Nullable final String option) {
+            if (!StringUtils.isEmpty(option)) {
+                for (RecognizedConflictResolutionBehavior behavior : values()) {
+                    if (behavior.option.equals(option)) {
+                        return behavior;
+                    }
+                }
+                log.warn("Unrecognized conflict-resolution behavior: {}", option);
+            }
+            return null;
+        }
+    }
+
     @ObjectClassDefinition(
     name = "ACS AEM Commons - Review Task Move Handler",
     description = "Create an OSGi configuration to enable this feature.")
     public @interface Config {
 
-       @AttributeDefinition(name = "Default Conflict Resolution",
-               description = "Select default behavior if conflict resolution is not provided at the review task level.",
-               options = {
-                       @Option(label = CONFLICT_RESOLUTION_NEW_VERSION, value = "Add as version (new-version)"),
-                       @Option(label = CONFLICT_RESOLUTION_NEW_ASSET, value = "Add as new asset (new-asset)"),
-                       @Option(label = CONFLICT_RESOLUTION_REPLACE, value = "Replace (replace)"),
-                       @Option(label = CONFLICT_RESOLUTION_SKIP, value = "Skip (skip)")
-               },
-               defaultValue = DEFAULT_DEFAULT_CONFLICT_RESOLUTION)
-       String conflict_resolution_default() default DEFAULT_DEFAULT_CONFLICT_RESOLUTION;
+        @AttributeDefinition(name = "Default Conflict Resolution",
+                description = "Select default behavior if conflict resolution is not provided at the review task level.",
+                options = {
+                        @Option(value = CONFLICT_RESOLUTION_NEW_VERSION,
+                                label = "Add as version (" + CONFLICT_RESOLUTION_NEW_VERSION + ")"),
+                        @Option(value = CONFLICT_RESOLUTION_NEW_ASSET,
+                                label = "Add as new asset (" + CONFLICT_RESOLUTION_NEW_ASSET + ")"),
+                        @Option(value = CONFLICT_RESOLUTION_REPLACE,
+                                label = "Replace (" + CONFLICT_RESOLUTION_REPLACE + ")"),
+                        @Option(value = CONFLICT_RESOLUTION_SKIP,
+                                label = "Skip (" + CONFLICT_RESOLUTION_SKIP + ")")
+                },
+                defaultValue = DEFAULT_DEFAULT_CONFLICT_RESOLUTION)
+        String conflict$_$resolution_default() default DEFAULT_DEFAULT_CONFLICT_RESOLUTION;
 
-       @AttributeDefinition(name = "Last Modified By",
-               description = "For Conflict Resolution: Version, the review task event does not track the user that completed the event. Use this property to specify the static name of of the [dam:Asset]/jcr:content@jcr:lastModifiedBy. Default: Review Task",
-               defaultValue = DEFAULT_LAST_MODIFIED_BY)
-        String conflict_resolution_version_last_modified_by() default DEFAULT_LAST_MODIFIED_BY;
+        @AttributeDefinition(name = "Last Modified By",
+                description = "For Conflict Resolution: Version, the review task event does not track the user that completed the event. Use this property to specify the static name of of the [dam:Asset]/jcr:content@jcr:lastModifiedBy. Default: Review Task",
+                defaultValue = DEFAULT_LAST_MODIFIED_BY)
+        String conflict$_$resolution_version_last$_$modified$_$by() default DEFAULT_LAST_MODIFIED_BY;
 
     }
 
@@ -139,15 +169,20 @@ public class ReviewTaskAssetMoverHandler implements EventHandler {
 
     @Activate
     protected void activate(ReviewTaskAssetMoverHandler.Config config) {
-        lastModifiedBy = config.conflict_resolution_version_last_modified_by();
-        defaultConflictResolution = config.conflict_resolution_default();
+        lastModifiedBy = config.conflict$_$resolution_version_last$_$modified$_$by();
+        final RecognizedConflictResolutionBehavior behavior =
+                RecognizedConflictResolutionBehavior.forOption(config.conflict$_$resolution_default());
+        if (behavior == null) {
+            defaultConflictResolution = DEFAULT_DEFAULT_CONFLICT_RESOLUTION;
+        } else {
+            defaultConflictResolution = config.conflict$_$resolution_default();
+        }
     }
 
     @Override
     public void handleEvent(Event event) {
-
-        try (ResourceResolver resourceResolver = resourceResolverFactory.getServiceResourceResolver(AUTH_INFO)){
-            final String path = (String) event.getProperty("TaskId");
+        final String path = (String) event.getProperty("TaskId");
+        try (ResourceResolver resourceResolver = resourceResolverFactory.getServiceResourceResolver(AUTH_INFO)) {
             final Resource taskResource = resourceResolver.getResource(path);
 
             if (taskResource != null) {
@@ -169,8 +204,17 @@ public class ReviewTaskAssetMoverHandler implements EventHandler {
                 }
             }
         } catch (LoginException e) {
-            log.error("Could not get resource resolver", e);
+            log.error("Could not get resource resolver when handling event with TaskId: " + path, e);
         }
+    }
+
+    /**
+     * Config property getter for testing.
+     *
+     * @return the defaultConflictResolution value
+     */
+    String getDefaultConflictResolution() {
+        return defaultConflictResolution;
     }
 
     private class ImmediateJob implements Runnable {
@@ -318,9 +362,11 @@ public class ReviewTaskAssetMoverHandler implements EventHandler {
         private void moveAsset(ResourceResolver resourceResolver, AssetManager assetManager, Asset asset, ValueMap taskProperties) {
             try {
                 final String status = asset.getValueMap().get(REL_PN_DAM_STATUS, String.class);
-                final String conflictResolution = taskProperties.get(PN_CONFLICT_RESOLUTION, defaultConflictResolution);
                 final String onApprovePath = taskProperties.get(PN_ON_APPROVE, String.class);
                 final String onRejectPath = taskProperties.get(PN_ON_REJECT, String.class);
+                final RecognizedConflictResolutionBehavior conflictResolution =
+                        RecognizedConflictResolutionBehavior.forOption(taskProperties.get(PN_CONFLICT_RESOLUTION,
+                                getDefaultConflictResolution()));
 
                 String destPath = null;
 
@@ -339,24 +385,30 @@ public class ReviewTaskAssetMoverHandler implements EventHandler {
                         if (exists) {
                             if (StringUtils.equals(asset.getPath(), destAssetPath)) {
                                 log.info("Reviewed asset [ {} ] is already in its final location, so there is nothing to do.", asset.getPath());
-                            } else if (CONFLICT_RESOLUTION_REPLACE.equals(conflictResolution)) {
-                                assetManager.removeAsset(destAssetPath);
-                                resourceResolver.commit();
-                                assetManager.moveAsset(asset.getPath(), destAssetPath);
-                                log.info("Moved with replace [ {} ] ~> [ {} ] based on approval status [ {} ]",
-                                        asset.getPath(), destAssetPath, status);
-                            } else if (CONFLICT_RESOLUTION_NEW_ASSET.equals(conflictResolution)) {
-                                destAssetPath = createUniqueAssetPath(assetManager, destPath, asset.getName());
-                                assetManager.moveAsset(asset.getPath(), destAssetPath);
-                                log.info("Moved with unique asset name [ {} ] ~> [ {} ] based on approval status [ {} ]",
-                                        asset.getPath(), destAssetPath, status);
-                            } else if (CONFLICT_RESOLUTION_NEW_VERSION.equals(conflictResolution)) {
-                                log.info("Creating new version of existing asset [ {} ] ~> [ {} ] based on approval status [ {} ]",
-                                        asset.getPath(), destAssetPath, status);
-                                createRevision(resourceResolver, assetManager, assetManager.getAsset(destAssetPath), asset);
-                            } else if (CONFLICT_RESOLUTION_SKIP.equals(conflictResolution)) {
-                                log.info("Skipping with due to existing asset at the same destination [ {} ] ~> [ {} ] based on approval status [ {} ]",
-                                        asset.getPath(), destAssetPath, status);
+                            } else if (conflictResolution != null) {
+                                switch (conflictResolution) {
+                                    case REPLACE:
+                                        assetManager.removeAsset(destAssetPath);
+                                        resourceResolver.commit();
+                                        assetManager.moveAsset(asset.getPath(), destAssetPath);
+                                        log.info("Moved with replace [ {} ] ~> [ {} ] based on approval status [ {} ]",
+                                                asset.getPath(), destAssetPath, status);
+                                        break;
+                                    case NEW_ASSET:
+                                        destAssetPath = createUniqueAssetPath(assetManager, destPath, asset.getName());
+                                        assetManager.moveAsset(asset.getPath(), destAssetPath);
+                                        log.info("Moved with unique asset name [ {} ] ~> [ {} ] based on approval status [ {} ]",
+                                                asset.getPath(), destAssetPath, status);
+                                        break;
+                                    case NEW_VERSION:
+                                        log.info("Creating new version of existing asset [ {} ] ~> [ {} ] based on approval status [ {} ]",
+                                                asset.getPath(), destAssetPath, status);
+                                        createRevision(resourceResolver, assetManager, assetManager.getAsset(destAssetPath), asset);
+                                        break;
+                                    default:
+                                        log.info("Skipping with due to existing asset at the same destination [ {} ] ~> [ {} ] based on approval status [ {} ]",
+                                                asset.getPath(), destAssetPath, status);
+                                }
                             }
                         } else {
                             assetManager.moveAsset(asset.getPath(), destAssetPath);
